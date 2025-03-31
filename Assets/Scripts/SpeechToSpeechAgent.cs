@@ -6,7 +6,7 @@ using OpenAI;
 using System.Threading.Tasks;
 using Samples.Whisper;
 
-public class AIAgent : MonoBehaviour
+public class SpeechToSpeech : MonoBehaviour
 {
     [Header("UI References")]
     [SerializeField] private Button recordButton;
@@ -92,5 +92,3 @@ public class AIAgent : MonoBehaviour
         // TTSManager.Instance.Speak(text);
     }
 }
-
-
