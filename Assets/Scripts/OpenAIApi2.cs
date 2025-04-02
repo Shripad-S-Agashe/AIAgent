@@ -118,6 +118,14 @@ namespace OpenAI
 
         #region Realtime Session Creation
 
+        [Serializable]
+        public enum AIVoices
+        {
+            coral,
+            ash,
+            sage
+        }
+
         /// <summary>
         /// Request object for creating a realtime session.
         /// </summary>
@@ -137,6 +145,11 @@ namespace OpenAI
             /// Required: instructions for the session.
             /// </summary>
             public string instructions { get; set; } = "You are a friendly assistant.";
+
+            /// <summary>
+            /// Optional: Voice Model for the AI Agent.
+            /// </summary>
+            public string voice { get; set; } = AIVoices.coral.ToString();
         }
 
         /// <summary>
@@ -428,34 +441,10 @@ namespace OpenAI
             };
             ws.OnMessage += (bytes) =>
             {
-                Debug.Log("Bytes Length:" + bytes.Length);
-                string message = Encoding.UTF8.GetString(bytes);
-                Debug.Log("Received Raw Message: " + message);
-
                 // Call the passed in callback.
                 onMessageCallback?.Invoke(bytes);
 
-                // (Optionally, keep your JSON parsing here.)
-                try
-                {
-                    var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
-                    if (json != null)
-                    {
-                        Debug.Log("Server Event Data: " + JsonConvert.SerializeObject(json, Formatting.Indented));
-                        if (json.TryGetValue("event", out object eventType))
-                        {
-                            Debug.Log("Event Received: " + eventType);
-                        }
-                        else
-                        {
-                            Debug.Log("No explicit 'event' field found in the message.");
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError("Error parsing received message as JSON: " + ex.Message);
-                }
+               // Debug_DisplayDataAsJasonInLog(bytes);
             };
             Debug.Log($"Attempting WebSocket connection to {wsUrl}...");
             try
@@ -470,6 +459,35 @@ namespace OpenAI
             }
 
             return ws; // Return the WebSocket instance
+        }
+
+        private static void Debug_DisplayDataAsJasonInLog(byte[] bytes)
+        {
+            Debug.Log("Bytes Length:" + bytes.Length);
+            string message = Encoding.UTF8.GetString(bytes);
+            Debug.Log("Received Raw Message: " + message);
+
+            // (Optionally, keep your JSON parsing here.)
+            try
+            {
+                var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
+                if (json != null)
+                {
+                    Debug.Log("Server Event Data: " + JsonConvert.SerializeObject(json, Formatting.Indented));
+                    if (json.TryGetValue("event", out object eventType))
+                    {
+                        Debug.Log("Event Received: " + eventType);
+                    }
+                    else
+                    {
+                        Debug.Log("No explicit 'event' field found in the message.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("Error parsing received message as JSON: " + ex.Message);
+            }
         }
 
         #endregion

@@ -6,11 +6,12 @@ using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
+using static OpenAI.OpenAIApi2;
 
 namespace OpenAI
 {
     /// <summary>
-    /// This class now streams microphone audio continuously by reading new samples 
+    /// This class streams microphone audio continuously by reading new samples 
     /// periodically and sending input_audio_buffer.append events. It does not rely on a fixed duration,
     /// and it doesn't send a commit event since server-side VAD is enabled.
     /// </summary>
@@ -25,7 +26,7 @@ namespace OpenAI
         [SerializeField] private Button recordButton;
         [SerializeField] private Dropdown micDropdown;
         [SerializeField] private Image progressBar;
-        [SerializeField] private Text message; // For logging output
+        [SerializeField] private Text message; // For transcript display only
 
         [Header("Audio Playback")]
         [SerializeField] public OpenAIMessageHandler messageHandler; // Responsible for playing audio
@@ -41,6 +42,11 @@ namespace OpenAI
 
         // Adjust how frequently (in seconds) new audio is sent.
         private float sendInterval = 0.25f;
+
+        [Header("AI Configuration")]
+        [SerializeField] private AIVoices AIVoice = AIVoices.coral; // Maximum recording duration in seconds
+        [SerializeField] private string instructions = "You are a very crank onld lady, dont be helpfull but mean you are suppose to question the user";
+        [SerializeField] private string model = "gpt-4o-realtime-preview"; // Default model, can be changed if needed
 
         private async void Start()
         {
@@ -58,7 +64,7 @@ namespace OpenAI
             int index = PlayerPrefs.GetInt("user-mic-device-index", 0);
             micDropdown.SetValueWithoutNotify(index);
             micName = micDropdown.options[index].text;
-            LogOutput("Using microphone: " + micName);
+            Debug.Log("Using microphone: " + micName);
 #endif
             // Set up the record button.
             recordButton.onClick.AddListener(OnRecordButtonPressed);
@@ -76,7 +82,7 @@ namespace OpenAI
         {
             PlayerPrefs.SetInt("user-mic-device-index", index);
             micName = micDropdown.options[index].text;
-            LogOutput("Selected microphone: " + micName);
+            Debug.Log("Selected microphone: " + micName);
         }
 
         /// <summary>
@@ -84,24 +90,25 @@ namespace OpenAI
         /// </summary>
         public async Task InitializeSessionAsync()
         {
-            LogOutput("Creating OpenAI Realtime Session...");
+            Debug.Log("Creating OpenAI Realtime Session...");
 
             var request = new OpenAIApi2.RealtimeSessionRequest
             {
-                model = "gpt-4o-realtime-preview",
-                instructions = "You are a friendly assistant.",
-                modalities = new string[] { "audio", "text" }
+                model = model,
+                instructions = instructions,
+                modalities = new string[] { "audio", "text" },
+                voice = AIVoice.ToString().ToLowerInvariant(), 
             };
 
             var response = await openAIApi.CreateRealtimeSession(request);
             if (response?.client_secret != null)
             {
                 SessionSecret = response.client_secret.value;
-                LogOutput("Session Secret: " + SessionSecret);
+                Debug.Log("Session Secret: " + SessionSecret);
             }
             else
             {
-                LogOutput("Failed to create realtime session or retrieve session secret.");
+                Debug.Log("Failed to create realtime session or retrieve session secret.");
             }
         }
 
@@ -110,13 +117,13 @@ namespace OpenAI
         /// </summary>
         public async Task ConnectToWebSocketAsync()
         {
-            LogOutput("Connecting to OpenAI realtime WebSocket...");
+            Debug.Log("Connecting to OpenAI realtime WebSocket...");
 
             ws = await openAIApi.ConnectRealtimeWebSocket(
                 ephemeralToken: SessionSecret,
                 onOpenCallback: (wsInstance) =>
                 {
-                    LogOutput("Connected to server.");
+                    Debug.Log("Connected to server.");
                     ws = wsInstance;
                 },
                 onMessageCallback: (bytes) =>
@@ -126,11 +133,11 @@ namespace OpenAI
                 },
                 onErrorCallback: (errorMsg) =>
                 {
-                    LogOutput("WebSocket Error: " + errorMsg);
+                    Debug.Log("WebSocket Error: " + errorMsg);
                 },
                 onCloseCallback: (closeCode) =>
                 {
-                    LogOutput("WebSocket closed with code: " + closeCode);
+                    Debug.Log("WebSocket closed with code: " + closeCode);
                 },
                 model: "gpt-4o-realtime-preview-2024-12-17"
             );
@@ -147,7 +154,7 @@ namespace OpenAI
         private void OnRecordButtonPressed()
         {
 #if UNITY_WEBGL && !UNITY_EDITOR
-            LogOutput("Recording not supported on WebGL.");
+            Debug.Log("Recording not supported on WebGL.");
 #else
             if (!isRecording)
             {
@@ -168,15 +175,15 @@ namespace OpenAI
         private void StartRecording()
         {
 #if UNITY_WEBGL && !UNITY_EDITOR
-            LogOutput("Recording not supported on WebGL.");
+            Debug.Log("Recording not supported on WebGL.");
             return;
 #else
             if (string.IsNullOrEmpty(micName))
             {
-                LogOutput("No microphone selected.");
+                Debug.Log("No microphone selected.");
                 return;
             }
-            LogOutput("Starting continuous recording with mic: " + micName);
+            Debug.Log("Starting continuous recording with mic: " + micName);
             // Start a looping recording with a long duration.
             recordingClip = Microphone.Start(micName, true, recordingDuration, sampleRate);
             lastSamplePosition = 0;
@@ -194,7 +201,7 @@ namespace OpenAI
             if (!isRecording)
                 return;
 
-            LogOutput("Stopping recording...");
+            Debug.Log("Stopping recording...");
             Microphone.End(micName);
             isRecording = false;
         }
@@ -259,7 +266,6 @@ namespace OpenAI
                 return;
 
             byte[] pcmBytes = ConvertToPCM16(samples);
-            LogOutput("Sending audio chunk: " + pcmBytes.Length + " bytes.");
 
             // Encode PCM data to Base64.
             string base64Audio = Convert.ToBase64String(pcmBytes);
@@ -280,7 +286,7 @@ namespace OpenAI
             }
             catch (Exception ex)
             {
-                LogOutput("Error sending audio chunk: " + ex.Message);
+                Debug.Log("Error sending audio chunk: " + ex.Message);
             }
         }
 
@@ -301,10 +307,11 @@ namespace OpenAI
         }
 
         /// <summary>
-        /// Appends a message to the UI text output and logs it.
+        /// Displays transcript messages on the UI.
         /// </summary>
         private void LogOutput(string msg)
         {
+            // Only update the UI with transcript messages.
             if (message != null)
             {
                 message.text = msg;
