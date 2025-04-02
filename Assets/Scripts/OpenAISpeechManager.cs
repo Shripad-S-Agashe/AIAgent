@@ -40,11 +40,10 @@ public class OpenAISpeechManager : MonoBehaviour
 
         Debug.Log("Session created. Connecting to WebSocket...");
 
-        webSocket = await openAI.ConnectRealtimeWebSocket(
+       /* webSocket = await openAI.ConnectRealtimeWebSocket(
             onOpenCallback: (ws) => {
                 Debug.Log("WebSocket Connected!");
                 sessionReady = true;
-
                 // Pass the connection to micSender
                 micSender.ws = ws;
             },
@@ -59,7 +58,7 @@ public class OpenAISpeechManager : MonoBehaviour
                 Debug.LogWarning("WebSocket closed: " + code);
                 sessionReady = false;
             }
-        );
+        );*/
     }
 
     private void Update()
@@ -76,7 +75,7 @@ public class OpenAISpeechManager : MonoBehaviour
         {
             if (!isRecording)
             {
-                micSender.StartRecording();
+                micSender.StartRecording(webSocket);
                 isRecording = true;
                 Debug.Log("Recording started");
             }
@@ -86,7 +85,7 @@ public class OpenAISpeechManager : MonoBehaviour
         {
             if (isRecording)
             {
-                micSender.StopRecording();
+                micSender.StopRecording(webSocket);
                 isRecording = false;
                 Debug.Log("Recording stopped");
             }

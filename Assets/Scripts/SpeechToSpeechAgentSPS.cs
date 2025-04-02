@@ -58,7 +58,7 @@ public class SpeechToSpeechAgentSPS : MonoBehaviour
     /// <summary>
     /// Unity Start callback. Initiates the WebSocket connection via OpenAIApi2.
     /// </summary>
-    async void Start()
+    void Start()
     {
         Debug.Log($"Start - Thread ID: {System.Threading.Thread.CurrentThread.ManagedThreadId}"); // ADD THIS
         if (openAIApiInstance == null)
@@ -71,12 +71,12 @@ public class SpeechToSpeechAgentSPS : MonoBehaviour
         try
         {
             // Pass our local handler methods as callbacks.
-            webSocketConnection = await openAIApiInstance.ConnectRealtimeWebSocket(
+           /* webSocketConnection = await openAIApiInstance.ConnectRealtimeWebSocket(
                 onOpenCallback: HandleWebSocketOpen,
                 onErrorCallback: HandleWebSocketError,
                 onCloseCallback: HandleWebSocketClose,
                 onMessageCallback: HandleWebSocketMessage
-            );
+            );*/
 
             // We no longer primarily rely on checking state immediately after await.
             // The HandleWebSocketOpen callback will set isConnected correctly.

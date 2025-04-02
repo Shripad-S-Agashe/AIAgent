@@ -27,18 +27,18 @@ public class MicAudioSender : MonoBehaviour
         }
     }
 
-    public void StartRecording()
+    public void StartRecording(WebSocket wss)
     {
         if (isRecording) return;
-
         micClip = Microphone.Start(micDevice, true, 10, sampleRate);
         isRecording = true;
+        ws = wss;
         StartCoroutine(SendMicData());
     }
 
-    public void StopRecording()
+    public void StopRecording(WebSocket wss)
     {
-        if (!isRecording) return;
+        if (!isRecording) return; 
 
         isRecording = false;
         Microphone.End(micDevice);

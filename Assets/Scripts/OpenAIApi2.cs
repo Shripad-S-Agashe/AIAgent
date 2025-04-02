@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Threading.Tasks;
+using Unity.WebRTC;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -271,11 +272,115 @@ namespace OpenAI
 
         #endregion
 
+        #region Realtime WebRTC Connection
+
+        /// <summary>
+        /// Asynchronously creates an SDP offer by polling the RTCSessionDescriptionAsyncOperation.
+        /// </summary>
+        /// <param name="peerConnection">The RTCPeerConnection instance.</param>
+        /// <returns>A task resolving to the generated RTCSessionDescription.</returns>
+        private async Task<RTCSessionDescription> CreateOfferAsync(RTCPeerConnection peerConnection)
+        {
+            // Use default offer/answer options.
+            RTCOfferAnswerOptions options = RTCOfferAnswerOptions.Default;
+            var op = peerConnection.CreateOffer(ref options);
+
+            // Poll until the operation is finished.
+            while (op.keepWaiting)
+            {
+                await Task.Yield();
+            }
+
+            if (op.IsError)
+            {
+                throw new Exception("Error creating offer: " + op.Error.message);
+            }
+
+            return op.Desc;
+        }
+
+        /// <summary>
+        /// Asynchronously sets the local description by polling the RTCSetSessionDescriptionAsyncOperation.
+        /// </summary>
+        /// <param name="peerConnection">The RTCPeerConnection instance.</param>
+        /// <param name="desc">The RTCSessionDescription to set.</param>
+        /// <returns>A task that completes when the local description is successfully set.</returns>
+        private async Task SetLocalDescriptionAsync(RTCPeerConnection peerConnection, RTCSessionDescription desc)
+        {
+            var op = peerConnection.SetLocalDescription(ref desc);
+
+            // Poll until the operation is finished.
+            while (op.keepWaiting)
+            {
+                await Task.Yield();
+            }
+
+            if (op.IsError)
+            {
+                throw new Exception("Error setting local description: " + op.Error.message);
+            }
+        }
+
+        /// <summary>
+        /// Establishes a WebRTC connection using the provided ephemeral token.
+        /// Note: A signaling server is required to exchange the SDP offer/answer and ICE candidates.
+        /// </summary>
+        /// <param name="ephemeralToken">The ephemeral token from realtime session creation.</param>
+        /// <returns>
+        /// An asynchronous task returning the established <see cref="RTCPeerConnection"/>.
+        /// </returns>
+        public async Task<RTCPeerConnection> ConnectRealtimeWebRTC(string ephemeralToken)
+        {
+            Debug.Log($"Establishing WebRTC connection using ephemeral token: {ephemeralToken}");
+
+            // Create a basic RTC configuration with a public STUN server.
+            RTCConfiguration config = default;
+            config.iceServers = new RTCIceServer[]
+            {
+        new RTCIceServer { urls = new string[] { "stun:stun.l.google.com:19302" } }
+            };
+
+            // Create a new RTCPeerConnection using the configuration.
+            RTCPeerConnection peerConnection = new RTCPeerConnection(ref config);
+
+            // Setup event handler for new ICE candidates.
+            peerConnection.OnIceCandidate = candidate =>
+            {
+                if (candidate != null)
+                {
+                    Debug.Log("New ICE Candidate: " + candidate.Candidate);
+                    // In a production scenario, send this candidate to your signaling server.
+                }
+            };
+
+            // Monitor connection state changes.
+            peerConnection.OnConnectionStateChange = state =>
+            {
+                Debug.Log("WebRTC Connection State: " + state);
+            };
+
+            // Create an SDP offer.
+            RTCSessionDescription offerDesc = await CreateOfferAsync(peerConnection);
+            // Set the local description.
+            await SetLocalDescriptionAsync(peerConnection, offerDesc);
+
+            Debug.Log("WebRTC offer created: " + offerDesc.sdp);
+
+            // In a complete implementation, you would now send the offer (and ephemeral token)
+            // to your signaling server, receive an SDP answer, and then call:
+            // await SetRemoteDescriptionAsync(peerConnection, answerDesc);
+
+            return peerConnection;
+        }
+
+        #endregion
+
         #region Realtime WebSocket Connection
 
         /// <summary>
-        /// Connects to the realtime API using WebSockets.
+        /// Connects to the realtime API using WebSockets, authenticating with the ephemeral token.
         /// </summary>
+        /// <param name="ephemeralToken">The ephemeral token (client secret) from the realtime session.</param>
         /// <param name="onOpenCallback">Callback for when connection opens.</param>
         /// <param name="onErrorCallback">Callback for errors.</param>
         /// <param name="onCloseCallback">Callback for when connection closes.</param>
@@ -283,27 +388,29 @@ namespace OpenAI
         /// <param name="model">The realtime model ID to connect to (e.g., "gpt-4o-realtime-preview-2024-12-17").</param>
         /// <returns>The connected WebSocket instance.</returns>
         public async Task<WebSocket> ConnectRealtimeWebSocket(
+            string ephemeralToken,
             Action<WebSocket> onOpenCallback = null,
             Action<string> onErrorCallback = null,
             Action<WebSocketCloseCode> onCloseCallback = null,
             Action<byte[]> onMessageCallback = null,
             string model = "gpt-4o-realtime-preview-2024-12-17")
+        {
+            // Ensure an ephemeral token is provided.
+            if (string.IsNullOrEmpty(ephemeralToken))
             {
+                Debug.LogError("Ephemeral token is not provided!");
+                throw new InvalidOperationException("Ephemeral token is not provided.");
+            }
+
             // Construct the WebSocket URL with the model as a query parameter.
             string wsUrl = $"wss://api.openai.com/v1/realtime?model={model}";
 
-            // Check Configuration and API Key for robustness.
-            if (Configuration?.Auth.ApiKey == null)
-            {
-                Debug.LogError("OpenAI API Key is not configured!");
-                throw new InvalidOperationException("OpenAI API Key is not configured.");
-            }
-
+            // Use the ephemeral token for authentication.
             var headers = new Dictionary<string, string>()
-            {
-                { "Authorization", $"Bearer {Configuration.Auth.ApiKey}" },
-                { "OpenAI-Beta", "realtime=v1" }
-            };
+    {
+        { "Authorization", $"Bearer {ephemeralToken}" },
+        { "OpenAI-Beta", "realtime=v1" }
+    };
 
             WebSocket ws = new WebSocket(wsUrl, headers);
 
@@ -316,16 +423,15 @@ namespace OpenAI
             ws.OnError += (errorMsg) =>
             {
                 Debug.LogError("Internal: WebSocket error: " + errorMsg);
-                onErrorCallback?.Invoke(errorMsg); // Call the provided callback
+                onErrorCallback?.Invoke(errorMsg);
             };
             ws.OnClose += (closeCode) =>
             {
                 Debug.Log("Internal: WebSocket closed with code: " + closeCode);
-                onCloseCallback?.Invoke(closeCode); // Call the provided callback
+                onCloseCallback?.Invoke(closeCode);
             };
             ws.OnMessage += (bytes) =>
             {
-                // Pass raw bytes to the callback
                 onMessageCallback?.Invoke(bytes);
             };
 
@@ -333,8 +439,7 @@ namespace OpenAI
             try
             {
                 await ws.Connect();
-                // Note: Connect completion doesn't guarantee state is 'Open' yet,
-                // that's why relying on the OnOpen callback is better.
+                // Note: Completion of Connect doesn't guarantee that the state is 'Open' immediately.
             }
             catch (Exception ex)
             {
@@ -346,5 +451,6 @@ namespace OpenAI
         }
 
         #endregion
+
     }
 }
