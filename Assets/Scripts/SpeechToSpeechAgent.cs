@@ -10,11 +10,9 @@ using UnityEngine.UI;
 namespace OpenAI
 {
     /// <summary>
-    /// This class handles speech-to-speech functionality by creating a realtime session,
-    /// connecting via WebSocket, and sending audio events (append + commit) based on
-    /// user microphone input. The microphone is selected from a dropdown at startup.
-    /// Recording starts when the record button is pressed and stops after a fixed duration.
-    /// WebSocket responses (audio bytes) are forwarded to the OpenAIMessageHandler.
+    /// This class now streams microphone audio continuously by reading new samples 
+    /// periodically and sending input_audio_buffer.append events. It does not rely on a fixed duration,
+    /// and it doesn't send a commit event since server-side VAD is enabled.
     /// </summary>
     public class SpeechToSpeech : MonoBehaviour
     {
@@ -34,11 +32,15 @@ namespace OpenAI
 
         // Audio parameters.
         private string micName;
-        private int sampleRate = 16000; // Adjust as needed.
+        private int sampleRate = 16000;
         private AudioClip recordingClip;
         private bool isRecording = false;
-        private float recordingTime = 0f;
-        private int maxRecordDuration = 5; // Duration in seconds; adjust as desired.
+        private int lastSamplePosition = 0;
+        // Using a long duration to enable continuous recording.
+        private int recordingDuration = 300; // seconds
+
+        // Adjust how frequently (in seconds) new audio is sent.
+        private float sendInterval = 0.25f;
 
         private async void Start()
         {
@@ -70,7 +72,6 @@ namespace OpenAI
         /// <summary>
         /// Called when the microphone dropdown value is changed.
         /// </summary>
-        /// <param name="index">The selected microphone index.</param>
         private void ChangeMicrophone(int index)
         {
             PlayerPrefs.SetInt("user-mic-device-index", index);
@@ -119,10 +120,10 @@ namespace OpenAI
                     ws = wsInstance;
                 },
                 onMessageCallback: (bytes) =>
-                    {
-                        // Simply forward the received bytes to our dedicated handler method.
-                        HandleMessageCallback(bytes);
-                    },
+                {
+                    // Forward the received bytes to our dedicated handler.
+                    HandleMessageCallback(bytes);
+                },
                 onErrorCallback: (errorMsg) =>
                 {
                     LogOutput("WebSocket Error: " + errorMsg);
@@ -131,25 +132,17 @@ namespace OpenAI
                 {
                     LogOutput("WebSocket closed with code: " + closeCode);
                 },
-                model: "gpt-4o-realtime-preview-2024-12-17" // Adjust the model if needed.
+                model: "gpt-4o-realtime-preview-2024-12-17"
             );
         }
 
         private void Update()
         {
             ws?.DispatchMessageQueue();
-
-            // Update recording progress.
-            if (isRecording)
-            {
-                recordingTime += Time.deltaTime;
-                progressBar.fillAmount = recordingTime / maxRecordDuration;
-            }
         }
 
         /// <summary>
-        /// Called when the record button is pressed.
-        /// Starts the recording and schedules the stop after the maximum duration.
+        /// Toggles recording on/off when the record button is pressed.
         /// </summary>
         private void OnRecordButtonPressed()
         {
@@ -159,15 +152,18 @@ namespace OpenAI
             if (!isRecording)
             {
                 StartRecording();
-                recordButton.interactable = false;
-                // Schedule stop recording after maxRecordDuration seconds.
-                Invoke(nameof(StopRecordingAndSendAudio), maxRecordDuration);
+                recordButton.GetComponentInChildren<Text>().text = "Stop Recording";
+            }
+            else
+            {
+                StopRecording();
+                recordButton.GetComponentInChildren<Text>().text = "Record";
             }
 #endif
         }
 
         /// <summary>
-        /// Starts recording audio from the selected microphone.
+        /// Starts recording from the selected microphone and begins streaming audio.
         /// </summary>
         private void StartRecording()
         {
@@ -180,46 +176,90 @@ namespace OpenAI
                 LogOutput("No microphone selected.");
                 return;
             }
-            LogOutput("Starting recording with mic: " + micName);
-            recordingTime = 0f;
-            progressBar.fillAmount = 0f;
-            recordingClip = Microphone.Start(micName, false, maxRecordDuration, sampleRate);
+            LogOutput("Starting continuous recording with mic: " + micName);
+            // Start a looping recording with a long duration.
+            recordingClip = Microphone.Start(micName, true, recordingDuration, sampleRate);
+            lastSamplePosition = 0;
             isRecording = true;
+            // Start a coroutine to stream audio chunks.
+            StartCoroutine(StreamAudioCoroutine());
 #endif
         }
 
         /// <summary>
-        /// Stops recording, processes the audio, and sends the audio events (append then commit) to the server.
+        /// Stops recording.
         /// </summary>
-        private async void StopRecordingAndSendAudio()
+        private void StopRecording()
         {
-#if UNITY_WEBGL && !UNITY_EDITOR
-            LogOutput("Recording not supported on WebGL.");
-            return;
-#else
             if (!isRecording)
                 return;
 
             LogOutput("Stopping recording...");
-            int recordedSamples = Microphone.GetPosition(micName);
             Microphone.End(micName);
             isRecording = false;
-            LogOutput("Recording stopped. Recorded samples: " + recordedSamples);
+        }
 
-            if (recordedSamples <= 0)
+        /// <summary>
+        /// Coroutine that continuously reads new audio data from the recording clip and sends it to the server.
+        /// </summary>
+        private System.Collections.IEnumerator StreamAudioCoroutine()
+        {
+            while (isRecording)
             {
-                LogOutput("No audio recorded.");
-                recordButton.interactable = true;
-                return;
+                int currentPosition = Microphone.GetPosition(micName);
+                int sampleCount = 0;
+                float[] samples = null;
+
+                // Handle the case when the recording wraps around.
+                if (currentPosition < lastSamplePosition)
+                {
+                    // Calculate samples from lastSamplePosition to end of clip.
+                    sampleCount = recordingClip.samples - lastSamplePosition;
+                    samples = new float[sampleCount];
+                    recordingClip.GetData(samples, lastSamplePosition);
+
+                    // Process and send the first half.
+                    if (sampleCount > 0)
+                    {
+                        SendAudioChunk(samples);
+                    }
+
+                    // Then read from beginning to currentPosition.
+                    if (currentPosition > 0)
+                    {
+                        sampleCount = currentPosition;
+                        samples = new float[sampleCount];
+                        recordingClip.GetData(samples, 0);
+                        SendAudioChunk(samples);
+                    }
+                }
+                else
+                {
+                    sampleCount = currentPosition - lastSamplePosition;
+                    if (sampleCount > 0)
+                    {
+                        samples = new float[sampleCount];
+                        recordingClip.GetData(samples, lastSamplePosition);
+                        SendAudioChunk(samples);
+                    }
+                }
+
+                lastSamplePosition = currentPosition;
+
+                yield return new WaitForSeconds(sendInterval);
             }
+        }
 
-            // Retrieve the recorded audio samples.
-            float[] samples = new float[recordedSamples * recordingClip.channels];
-            recordingClip.GetData(samples, 0);
+        /// <summary>
+        /// Converts float samples to 16-bit PCM, encodes them as Base64, and sends an append event.
+        /// </summary>
+        private async void SendAudioChunk(float[] samples)
+        {
+            if (samples == null || samples.Length == 0 || ws == null)
+                return;
 
-            // Convert float samples (-1 to 1) to 16-bit PCM bytes.
             byte[] pcmBytes = ConvertToPCM16(samples);
-            LogOutput("Audio converted to PCM16 with " + pcmBytes.Length + " bytes.");
+            LogOutput("Sending audio chunk: " + pcmBytes.Length + " bytes.");
 
             // Encode PCM data to Base64.
             string base64Audio = Convert.ToBase64String(pcmBytes);
@@ -233,14 +273,6 @@ namespace OpenAI
             };
 
             string appendJson = JsonConvert.SerializeObject(appendPayload);
-            LogOutput("Sending mic audio append event. Payload length: " + appendJson.Length);
-
-            if (ws == null)
-            {
-                LogOutput("WebSocket instance is null. Cannot send message.");
-                recordButton.interactable = true;
-                return;
-            }
 
             try
             {
@@ -248,38 +280,7 @@ namespace OpenAI
             }
             catch (Exception ex)
             {
-                LogOutput("Error sending mic audio append event: " + ex.Message);
-            }
-
-            // Wait briefly before sending the commit event.
-            await Task.Delay(500);
-            await SendAudioCommitMessage();
-
-            recordButton.interactable = true;
-#endif
-        }
-
-        /// <summary>
-        /// Sends an input_audio_buffer.commit event to prompt the server to process the appended audio.
-        /// </summary>
-        private async Task SendAudioCommitMessage()
-        {
-            var commitPayload = new Dictionary<string, object>
-            {
-                { "event_id", "event_" + Guid.NewGuid().ToString("N") },
-                { "type", "input_audio_buffer.commit" }
-            };
-
-            string commitJson = JsonConvert.SerializeObject(commitPayload);
-            LogOutput("Sending audio buffer commit event: " + commitJson);
-
-            try
-            {
-                await ws.SendText(commitJson);
-            }
-            catch (Exception ex)
-            {
-                LogOutput("Error sending audio commit event: " + ex.Message);
+                LogOutput("Error sending audio chunk: " + ex.Message);
             }
         }
 
@@ -350,18 +351,15 @@ namespace OpenAI
             {
                 Debug.LogError("Error parsing JSON message: " + ex.Message);
             }
-            // For any other message types, you could add additional handling here.
         }
 
         /// <summary>
         /// Extracts the transcript from the JSON payload and prints it to the UI.
         /// </summary>
-        /// <param name="json">The deserialized JSON object containing the transcript.</param>
         private void DisplayTranscript(Dictionary<string, object> json)
         {
             if (json.TryGetValue("part", out object partObj))
             {
-                // Convert the 'part' object to a JObject to easily extract the transcript.
                 var partJObject = partObj as Newtonsoft.Json.Linq.JObject;
                 if (partJObject != null && partJObject.TryGetValue("transcript", out var transcriptToken))
                 {
@@ -372,7 +370,5 @@ namespace OpenAI
             }
             LogOutput("Transcript not found in the response.");
         }
-
-
     }
 }
