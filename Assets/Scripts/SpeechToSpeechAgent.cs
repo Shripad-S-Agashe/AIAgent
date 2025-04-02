@@ -346,7 +346,7 @@ namespace OpenAI
                 Debug.LogError("Error parsing JSON message: " + ex.Message);
             }
             // For any other message types, pass to the default handler if desired.
-            messageHandler?.HandleWebSocketMessage(bytes);
+           // messageHandler?.HandleWebSocketMessage(bytes);
         }
 
     }
