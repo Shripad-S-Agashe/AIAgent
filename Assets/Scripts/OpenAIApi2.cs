@@ -428,21 +428,20 @@ namespace OpenAI
             };
             ws.OnMessage += (bytes) =>
             {
-                Debug.Log("Bytes Length:"+bytes.Length);
-                // Decode the message from bytes and log it.
+                Debug.Log("Bytes Length:" + bytes.Length);
                 string message = Encoding.UTF8.GetString(bytes);
                 Debug.Log("Received Raw Message: " + message);
 
-                // Attempt to parse the message as JSON.
+                // Call the passed in callback.
+                onMessageCallback?.Invoke(bytes);
+
+                // (Optionally, keep your JSON parsing here.)
                 try
                 {
                     var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
                     if (json != null)
                     {
-                        // Log the complete JSON dictionary.
                         Debug.Log("Server Event Data: " + JsonConvert.SerializeObject(json, Formatting.Indented));
-
-                        // Check for a specific "event" field.
                         if (json.TryGetValue("event", out object eventType))
                         {
                             Debug.Log("Event Received: " + eventType);
@@ -458,7 +457,6 @@ namespace OpenAI
                     Debug.LogError("Error parsing received message as JSON: " + ex.Message);
                 }
             };
-
             Debug.Log($"Attempting WebSocket connection to {wsUrl}...");
             try
             {

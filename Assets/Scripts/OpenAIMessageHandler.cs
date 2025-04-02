@@ -1,51 +1,89 @@
 using UnityEngine;
 using System;
-using System.Text;
+using System.Collections;
 using System.Collections.Generic;
 
 public class OpenAIMessageHandler : MonoBehaviour
 {
+    [Tooltip("Assign an AudioSource component that will play the received audio.")]
     public AudioSource audioSource;
 
-    private List<byte> audioBuffer = new List<byte>();
+    // A buffer to accumulate incoming PCM16 audio bytes.
+    private List<byte> audioQueue = new List<byte>();
+    private bool isPlayingQueue = false;
 
-    public void HandleWebSocketMessage(byte[] bytes)
+    /// <summary>
+    /// Call this method to add new audio bytes to the queue.
+    /// </summary>
+    /// <param name="newAudioBytes">New PCM16 audio bytes (16kHz mono) received from the delta response.</param>
+    public void PlayAudio(byte[] newAudioBytes)
     {
-        // Try to parse as UTF-8 text first
-        string msg = Encoding.UTF8.GetString(bytes);
+        // Append the new bytes to the queue.
+        audioQueue.AddRange(newAudioBytes);
+        Debug.Log("Queued " + newAudioBytes.Length + " bytes; total in queue: " + audioQueue.Count);
 
-        if (msg.StartsWith("{"))
+        // If nothing is playing, start the coroutine to play queued audio.
+        if (!isPlayingQueue)
         {
-            Debug.Log("Received JSON message: " + msg);
-            // You can parse and handle types like "transcript" or "text" here
-            return;
-        }
-
-        // Otherwise, assume it’s audio bytes (raw PCM 16kHz mono)
-        audioBuffer.AddRange(bytes);
-
-        // Optional: once buffer is big enough, play it
-        if (audioBuffer.Count > 32000) // ~1s audio
-        {
-            PlayBufferedAudio();
-            audioBuffer.Clear();
+            StartCoroutine(PlayAudioFromQueue());
         }
     }
 
-    private void PlayBufferedAudio()
+    /// <summary>
+    /// Coroutine that checks the audio queue and plays audio sequentially.
+    /// </summary>
+    private IEnumerator PlayAudioFromQueue()
     {
-        int sampleCount = audioBuffer.Count / 2;
-        float[] samples = new float[sampleCount];
+        isPlayingQueue = true;
 
-        for (int i = 0; i < sampleCount; i++)
+        // Define a minimum number of bytes to play (for example, 100ms of audio at 16kHz, 16-bit mono is ~3200 bytes)
+        int minimumBytesToPlay = 3200;
+
+        while (audioQueue.Count > 0)
         {
-            short sample = BitConverter.ToInt16(audioBuffer.ToArray(), i * 2);
-            samples[i] = sample / 32768f;
+            // Wait until we have at least the minimum amount of data.
+            if (audioQueue.Count < minimumBytesToPlay)
+            {
+                // Optionally, wait a short time to allow more audio to accumulate.
+                yield return new WaitForSeconds(0.05f);
+                continue;
+            }
+
+            // Copy the accumulated bytes to a new array and clear the queue.
+            byte[] chunk = audioQueue.ToArray();
+            audioQueue.Clear();
+
+            // Convert PCM16 bytes to float samples.
+            int sampleCount = chunk.Length / 2;
+            float[] samples = new float[sampleCount];
+            for (int i = 0; i < sampleCount; i++)
+            {
+                short sample = BitConverter.ToInt16(chunk, i * 2);
+                samples[i] = sample / 32768f;
+            }
+
+            // Create an AudioClip from the samples.
+            AudioClip clip = AudioClip.Create("ResponseAudio", sampleCount, 1, 16000, false);
+            clip.SetData(samples, 0);
+
+            // Play the clip.
+            audioSource.clip = clip;
+            audioSource.Play();
+            Debug.Log("Playing audio clip with " + sampleCount + " samples.");
+
+            // Wait until the clip has finished playing.
+            yield return new WaitUntil(() => !audioSource.isPlaying);
         }
 
-        AudioClip clip = AudioClip.Create("ResponseAudio", sampleCount, 1, 16000, false);
-        clip.SetData(samples, 0);
-        audioSource.clip = clip;
-        audioSource.Play();
+        isPlayingQueue = false;
+    }
+
+    /// <summary>
+    /// (Optional) Handles non-delta messages or other types of incoming data.
+    /// </summary>
+    public void HandleWebSocketMessage(byte[] bytes)
+    {
+        Debug.Log("Received non-delta message (" + bytes.Length + " bytes).");
+        // Additional handling can be implemented here.
     }
 }

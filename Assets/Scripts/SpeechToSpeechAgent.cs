@@ -14,6 +14,7 @@ namespace OpenAI
     /// connecting via WebSocket, and sending audio events (append + commit) based on
     /// user microphone input. The microphone is selected from a dropdown at startup.
     /// Recording starts when the record button is pressed and stops after a fixed duration.
+    /// WebSocket responses (audio bytes) are forwarded to the OpenAIMessageHandler.
     /// </summary>
     public class SpeechToSpeech : MonoBehaviour
     {
@@ -28,6 +29,9 @@ namespace OpenAI
         [SerializeField] private Image progressBar;
         [SerializeField] private Text message; // For logging output
 
+        [Header("Audio Playback")]
+        [SerializeField] public OpenAIMessageHandler messageHandler; // Responsible for playing audio
+
         // Audio parameters.
         private string micName;
         private int sampleRate = 16000; // Adjust as needed.
@@ -38,8 +42,6 @@ namespace OpenAI
 
         private async void Start()
         {
-            
-
 #if UNITY_WEBGL && !UNITY_EDITOR
             micDropdown.options.Add(new Dropdown.OptionData("Microphone not supported on WebGL"));
 #else
@@ -56,11 +58,10 @@ namespace OpenAI
             micName = micDropdown.options[index].text;
             LogOutput("Using microphone: " + micName);
 #endif
-
             // Set up the record button.
             recordButton.onClick.AddListener(OnRecordButtonPressed);
 
-
+            // Now initialize the realtime session and WebSocket connection.
             openAIApi = new OpenAIApi2();
             await InitializeSessionAsync();
             await ConnectToWebSocketAsync();
@@ -70,15 +71,12 @@ namespace OpenAI
         /// Called when the microphone dropdown value is changed.
         /// </summary>
         /// <param name="index">The selected microphone index.</param>
-        private void ChangeMicDropdown(int index)
+        private void ChangeMicrophone(int index)
         {
             PlayerPrefs.SetInt("user-mic-device-index", index);
             micName = micDropdown.options[index].text;
             LogOutput("Selected microphone: " + micName);
         }
-
-        // For convenience we alias the above method.
-        private void ChangeMicrophone(int index) => ChangeMicDropdown(index);
 
         /// <summary>
         /// Initializes the realtime session and retrieves the session secret.
@@ -121,10 +119,10 @@ namespace OpenAI
                     ws = wsInstance;
                 },
                 onMessageCallback: (bytes) =>
-                {
-                    string msg = Encoding.UTF8.GetString(bytes);
-                    LogOutput("Received Message: " + msg);
-                },
+                    {
+                        // Simply forward the received bytes to our dedicated handler method.
+                        HandleMessageCallback(bytes);
+                    },
                 onErrorCallback: (errorMsg) =>
                 {
                     LogOutput("WebSocket Error: " + errorMsg);
@@ -141,7 +139,7 @@ namespace OpenAI
         {
             ws?.DispatchMessageQueue();
 
-            // If recording, update progress.
+            // Update recording progress.
             if (isRecording)
             {
                 recordingTime += Time.deltaTime;
@@ -161,7 +159,6 @@ namespace OpenAI
             if (!isRecording)
             {
                 StartRecording();
-                // Disable the record button until recording is complete.
                 recordButton.interactable = false;
                 // Schedule stop recording after maxRecordDuration seconds.
                 Invoke(nameof(StopRecordingAndSendAudio), maxRecordDuration);
@@ -176,6 +173,7 @@ namespace OpenAI
         {
 #if UNITY_WEBGL && !UNITY_EDITOR
             LogOutput("Recording not supported on WebGL.");
+            return;
 #else
             if (string.IsNullOrEmpty(micName))
             {
@@ -257,7 +255,6 @@ namespace OpenAI
             await Task.Delay(500);
             await SendAudioCommitMessage();
 
-            // Re-enable the record button.
             recordButton.interactable = true;
 #endif
         }
@@ -289,8 +286,6 @@ namespace OpenAI
         /// <summary>
         /// Converts an array of float audio samples (range -1 to 1) into a 16-bit PCM (little-endian) byte array.
         /// </summary>
-        /// <param name="samples">The float audio samples.</param>
-        /// <returns>A byte array of PCM16 audio data.</returns>
         private byte[] ConvertToPCM16(float[] samples)
         {
             byte[] bytes = new byte[samples.Length * 2];
@@ -307,7 +302,6 @@ namespace OpenAI
         /// <summary>
         /// Appends a message to the UI text output and logs it.
         /// </summary>
-        /// <param name="msg">The message to log.</param>
         private void LogOutput(string msg)
         {
             if (message != null)
@@ -316,5 +310,44 @@ namespace OpenAI
             }
             Debug.Log(msg);
         }
+
+
+        /// <summary>
+        /// Handles incoming messages by checking if the type is a "response.audio.delta".
+        /// If so, it extracts the audio delta, decodes it from Base64, and calls the external message handler's PlayAudio method.
+        /// Otherwise, it forwards the raw bytes to HandleWebSocketMessage.
+        /// </summary>
+        private void HandleMessageCallback(byte[] bytes)
+        {
+            string msg = Encoding.UTF8.GetString(bytes);
+            try
+            {
+                var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(msg);
+                if (json != null && json.TryGetValue("type", out object typeObj))
+                {
+                    string type = typeObj.ToString();
+                    if (type == "response.audio.delta")
+                    {
+                        if (json.TryGetValue("delta", out object deltaObj))
+                        {
+                            string deltaBase64 = deltaObj.ToString();
+                            byte[] deltaBytes = Convert.FromBase64String(deltaBase64);
+                            if (messageHandler != null)
+                            {
+                                messageHandler.PlayAudio(deltaBytes);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("Error parsing JSON message: " + ex.Message);
+            }
+            // For any other message types, pass to the default handler if desired.
+            messageHandler?.HandleWebSocketMessage(bytes);
+        }
+
     }
 }
