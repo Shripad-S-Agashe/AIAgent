@@ -29,10 +29,7 @@ namespace OpenAI
         {
             get
             {
-                if (configuration == null)
-                {
-                    configuration = new Configuration();
-                }
+                configuration ??= new Configuration();
                 return configuration;
             }
         }
@@ -45,7 +42,7 @@ namespace OpenAI
         /// <summary>
         /// JSON serializer settings using snake_case for JSON.
         /// </summary>
-        private readonly JsonSerializerSettings jsonSerializerSettings = new JsonSerializerSettings()
+        private readonly JsonSerializerSettings jsonSerializerSettings = new()
         {
             NullValueHandling = NullValueHandling.Ignore,
             ContractResolver = new DefaultContractResolver()
@@ -78,7 +75,7 @@ namespace OpenAI
         /// <returns>A byte array representing the JSON payload.</returns>
         private byte[] CreatePayload<T>(T request)
         {
-            var json = JsonConvert.SerializeObject(request, jsonSerializerSettings);
+            string json = JsonConvert.SerializeObject(request, jsonSerializerSettings);
             return Encoding.UTF8.GetBytes(json);
         }
 
@@ -93,13 +90,16 @@ namespace OpenAI
         private async Task<T> DispatchRequest<T>(string path, string method, byte[] payload = null) where T : IResponse
         {
             T data;
-            using (var request = UnityWebRequest.Put(path, payload))
+            using (UnityWebRequest request = UnityWebRequest.Put(path, payload))
             {
                 request.method = method;
                 request.SetHeaders(Configuration, ContentType.ApplicationJson);
-                var asyncOperation = request.SendWebRequest();
+                UnityWebRequestAsyncOperation asyncOperation = request.SendWebRequest();
                 while (!asyncOperation.isDone)
+                {
                     await Task.Yield();
+                }
+
                 data = JsonConvert.DeserializeObject<T>(request.downloadHandler.text, jsonSerializerSettings);
             }
             if (data?.Error != null)
@@ -265,7 +265,7 @@ namespace OpenAI
         public async Task<RealtimeSessionResponse> CreateRealtimeSession(RealtimeSessionRequest request)
         {
             // Endpoint for creating realtime sessions.
-            var path = $"{BASE_PATH}/realtime/sessions";
+            string path = $"{BASE_PATH}/realtime/sessions";
             byte[] payload = CreatePayload(request);
             return await DispatchRequest<RealtimeSessionResponse>(path, UnityWebRequest.kHttpVerbPOST, payload);
         }
@@ -283,7 +283,7 @@ namespace OpenAI
         {
             // Use default offer/answer options.
             RTCOfferAnswerOptions options = RTCOfferAnswerOptions.Default;
-            var op = peerConnection.CreateOffer(ref options);
+            RTCSessionDescriptionAsyncOperation op = peerConnection.CreateOffer(ref options);
 
             // Poll until the operation is finished.
             while (op.keepWaiting)
@@ -291,12 +291,7 @@ namespace OpenAI
                 await Task.Yield();
             }
 
-            if (op.IsError)
-            {
-                throw new Exception("Error creating offer: " + op.Error.message);
-            }
-
-            return op.Desc;
+            return op.IsError ? throw new Exception("Error creating offer: " + op.Error.message) : op.Desc;
         }
 
         /// <summary>
@@ -307,7 +302,7 @@ namespace OpenAI
         /// <returns>A task that completes when the local description is successfully set.</returns>
         private async Task SetLocalDescriptionAsync(RTCPeerConnection peerConnection, RTCSessionDescription desc)
         {
-            var op = peerConnection.SetLocalDescription(ref desc);
+            RTCSetSessionDescriptionAsyncOperation op = peerConnection.SetLocalDescription(ref desc);
 
             // Poll until the operation is finished.
             while (op.keepWaiting)
@@ -337,26 +332,27 @@ namespace OpenAI
             RTCConfiguration config = default;
             config.iceServers = new RTCIceServer[]
             {
-        new RTCIceServer { urls = new string[] { "stun:stun.l.google.com:19302" } }
+        new() { urls = new string[] { "stun:stun.l.google.com:19302" } }
             };
 
             // Create a new RTCPeerConnection using the configuration.
-            RTCPeerConnection peerConnection = new RTCPeerConnection(ref config);
-
-            // Setup event handler for new ICE candidates.
-            peerConnection.OnIceCandidate = candidate =>
+            RTCPeerConnection peerConnection = new(ref config)
             {
-                if (candidate != null)
+                // Setup event handler for new ICE candidates.
+                OnIceCandidate = candidate =>
                 {
-                    Debug.Log("New ICE Candidate: " + candidate.Candidate);
-                    // In a production scenario, send this candidate to your signaling server.
-                }
-            };
+                    if (candidate != null)
+                    {
+                        Debug.Log("New ICE Candidate: " + candidate.Candidate);
+                        // In a production scenario, send this candidate to your signaling server.
+                    }
+                },
 
-            // Monitor connection state changes.
-            peerConnection.OnConnectionStateChange = state =>
-            {
-                Debug.Log("WebRTC Connection State: " + state);
+                // Monitor connection state changes.
+                OnConnectionStateChange = state =>
+                {
+                    Debug.Log("WebRTC Connection State: " + state);
+                }
             };
 
             // Create an SDP offer.
@@ -406,13 +402,13 @@ namespace OpenAI
             string wsUrl = $"wss://api.openai.com/v1/realtime?model={model}";
 
             // Use the ephemeral token for authentication.
-            var headers = new Dictionary<string, string>()
-    {
-        { "Authorization", $"Bearer {ephemeralToken}" },
-        { "OpenAI-Beta", "realtime=v1" }
-    };
+            Dictionary<string, string> headers = new()
+            {
+                { "Authorization", $"Bearer {ephemeralToken}" },
+                { "OpenAI-Beta", "realtime=v1" }
+            };
 
-            WebSocket ws = new WebSocket(wsUrl, headers);
+            WebSocket ws = new(wsUrl, headers);
 
             // --- Attach event handlers using the callbacks ---
             ws.OnOpen += () =>
@@ -432,7 +428,35 @@ namespace OpenAI
             };
             ws.OnMessage += (bytes) =>
             {
-                onMessageCallback?.Invoke(bytes);
+                Debug.Log("Bytes Length:"+bytes.Length);
+                // Decode the message from bytes and log it.
+                string message = Encoding.UTF8.GetString(bytes);
+                Debug.Log("Received Raw Message: " + message);
+
+                // Attempt to parse the message as JSON.
+                try
+                {
+                    var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
+                    if (json != null)
+                    {
+                        // Log the complete JSON dictionary.
+                        Debug.Log("Server Event Data: " + JsonConvert.SerializeObject(json, Formatting.Indented));
+
+                        // Check for a specific "event" field.
+                        if (json.TryGetValue("event", out object eventType))
+                        {
+                            Debug.Log("Event Received: " + eventType);
+                        }
+                        else
+                        {
+                            Debug.Log("No explicit 'event' field found in the message.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError("Error parsing received message as JSON: " + ex.Message);
+                }
             };
 
             Debug.Log($"Attempting WebSocket connection to {wsUrl}...");
