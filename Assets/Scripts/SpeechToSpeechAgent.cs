@@ -306,16 +306,15 @@ namespace OpenAI
         {
             if (message != null)
             {
-                message.text += msg + "\n";
+                message.text = msg;
             }
             Debug.Log(msg);
         }
 
-
         /// <summary>
-        /// Handles incoming messages by checking if the type is a "response.audio.delta".
-        /// If so, it extracts the audio delta, decodes it from Base64, and calls the external message handler's PlayAudio method.
-        /// Otherwise, it forwards the raw bytes to HandleWebSocketMessage.
+        /// Handles incoming messages by checking for different types of events.
+        /// If the type is "response.audio.delta", it extracts the audio delta and plays it.
+        /// If the type is "response.content_part.done", it displays the transcript.
         /// </summary>
         private void HandleMessageCallback(byte[] bytes)
         {
@@ -339,15 +338,41 @@ namespace OpenAI
                             return;
                         }
                     }
+                    else if (type == "response.content_part.done")
+                    {
+                        // When a content part is done, display the transcript from the response.
+                        DisplayTranscript(json);
+                        return;
+                    }
                 }
             }
             catch (Exception ex)
             {
                 Debug.LogError("Error parsing JSON message: " + ex.Message);
             }
-            // For any other message types, pass to the default handler if desired.
-           // messageHandler?.HandleWebSocketMessage(bytes);
+            // For any other message types, you could add additional handling here.
         }
+
+        /// <summary>
+        /// Extracts the transcript from the JSON payload and prints it to the UI.
+        /// </summary>
+        /// <param name="json">The deserialized JSON object containing the transcript.</param>
+        private void DisplayTranscript(Dictionary<string, object> json)
+        {
+            if (json.TryGetValue("part", out object partObj))
+            {
+                // Convert the 'part' object to a JObject to easily extract the transcript.
+                var partJObject = partObj as Newtonsoft.Json.Linq.JObject;
+                if (partJObject != null && partJObject.TryGetValue("transcript", out var transcriptToken))
+                {
+                    string transcript = transcriptToken.ToString();
+                    LogOutput("Transcript: " + transcript);
+                    return;
+                }
+            }
+            LogOutput("Transcript not found in the response.");
+        }
+
 
     }
 }
