@@ -5,170 +5,228 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace OpenAI
 {
     /// <summary>
     /// This class handles speech-to-speech functionality by creating a realtime session,
-    /// storing the session secret, connecting with WebSocket to the realtime API,
-    /// and sending audio events (append and commit) from the microphone.
+    /// connecting via WebSocket, and sending audio events (append + commit) based on
+    /// user microphone input. The microphone is selected from a dropdown at startup.
+    /// Recording starts when the record button is pressed and stops after a fixed duration.
     /// </summary>
     public class SpeechToSpeech : MonoBehaviour
     {
-        /// <summary>
-        /// Gets the session secret retrieved from the realtime session.
-        /// </summary>
         public string SessionSecret { get; private set; }
 
         private OpenAIApi2 openAIApi;
         private WebSocket ws;
 
+        [Header("UI Elements")]
+        [SerializeField] private Button recordButton;
+        [SerializeField] private Dropdown micDropdown;
+        [SerializeField] private Image progressBar;
+        [SerializeField] private Text message; // For logging output
+
+        // Audio parameters.
+        private string micName;
+        private int sampleRate = 16000; // Adjust as needed.
+        private AudioClip recordingClip;
+        private bool isRecording = false;
+        private float recordingTime = 0f;
+        private int maxRecordDuration = 5; // Duration in seconds; adjust as desired.
+
         private async void Start()
         {
+            
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            micDropdown.options.Add(new Dropdown.OptionData("Microphone not supported on WebGL"));
+#else
+            // Populate the mic dropdown with available devices.
+            foreach (var device in Microphone.devices)
+            {
+                micDropdown.options.Add(new Dropdown.OptionData(device));
+            }
+            micDropdown.onValueChanged.AddListener(ChangeMicrophone);
+
+            // Retrieve the last selected mic index (default to 0 if not set).
+            int index = PlayerPrefs.GetInt("user-mic-device-index", 0);
+            micDropdown.SetValueWithoutNotify(index);
+            micName = micDropdown.options[index].text;
+            LogOutput("Using microphone: " + micName);
+#endif
+
+            // Set up the record button.
+            recordButton.onClick.AddListener(OnRecordButtonPressed);
+
+
             openAIApi = new OpenAIApi2();
             await InitializeSessionAsync();
             await ConnectToWebSocketAsync();
         }
 
         /// <summary>
-        /// Initializes the realtime session, stores the session secret, and prints it in the debug log.
+        /// Called when the microphone dropdown value is changed.
         /// </summary>
-        /// <returns>A task representing the asynchronous operation.</returns>
+        /// <param name="index">The selected microphone index.</param>
+        private void ChangeMicDropdown(int index)
+        {
+            PlayerPrefs.SetInt("user-mic-device-index", index);
+            micName = micDropdown.options[index].text;
+            LogOutput("Selected microphone: " + micName);
+        }
+
+        // For convenience we alias the above method.
+        private void ChangeMicrophone(int index) => ChangeMicDropdown(index);
+
+        /// <summary>
+        /// Initializes the realtime session and retrieves the session secret.
+        /// </summary>
         public async Task InitializeSessionAsync()
         {
-            Debug.Log("Creating OpenAI Realtime Session...");
+            LogOutput("Creating OpenAI Realtime Session...");
 
-            OpenAIApi2.RealtimeSessionRequest request = new()
+            var request = new OpenAIApi2.RealtimeSessionRequest
             {
                 model = "gpt-4o-realtime-preview",
                 instructions = "You are a friendly assistant.",
                 modalities = new string[] { "audio", "text" }
             };
 
-            OpenAIApi2.RealtimeSessionResponse response = await openAIApi.CreateRealtimeSession(request);
-
+            var response = await openAIApi.CreateRealtimeSession(request);
             if (response?.client_secret != null)
             {
                 SessionSecret = response.client_secret.value;
-                Debug.Log("Session Secret: " + SessionSecret);
+                LogOutput("Session Secret: " + SessionSecret);
             }
             else
             {
-                Debug.LogError("Failed to create realtime session or retrieve session secret.");
+                LogOutput("Failed to create realtime session or retrieve session secret.");
             }
         }
 
         /// <summary>
-        /// Connects to the realtime API via WebSocket using the ephemeral token for authentication.
-        /// Mirrors the JavaScript example provided by OpenAI.
+        /// Connects to the realtime WebSocket using the session secret.
         /// </summary>
-        /// <returns>A task representing the asynchronous operation.</returns>
         public async Task ConnectToWebSocketAsync()
         {
-            Debug.Log("Connecting to OpenAI realtime WebSocket...");
+            LogOutput("Connecting to OpenAI realtime WebSocket...");
 
-            // Use the ephemeral token (SessionSecret) for authentication.
             ws = await openAIApi.ConnectRealtimeWebSocket(
                 ephemeralToken: SessionSecret,
-                onOpenCallback: async (wsInstance) =>
+                onOpenCallback: (wsInstance) =>
                 {
-                    Debug.Log("Connected to server.");
+                    LogOutput("Connected to server.");
                     ws = wsInstance;
-                    // Once connected, record and send mic audio.
-                    await SendMicAudioMessage();
                 },
                 onMessageCallback: (bytes) =>
                 {
-                    // Decode the message from bytes and log it.
-                    string message = Encoding.UTF8.GetString(bytes);
-                    Debug.Log("Received Message: " + message);
-
-                    try
-                    {
-                        var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(message);
-                        if (json != null)
-                        {
-                            Debug.Log("Server Event Data: " + JsonConvert.SerializeObject(json, Formatting.Indented));
-                            if (json.TryGetValue("event", out object eventType))
-                            {
-                                Debug.Log("Event Received: " + eventType);
-                            }
-                            else
-                            {
-                                Debug.Log("No explicit 'event' field found in the message.");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.LogError("Error parsing received message as JSON: " + ex.Message);
-                    }
+                    string msg = Encoding.UTF8.GetString(bytes);
+                    LogOutput("Received Message: " + msg);
                 },
                 onErrorCallback: (errorMsg) =>
                 {
-                    Debug.LogError("WebSocket Error: " + errorMsg);
+                    LogOutput("WebSocket Error: " + errorMsg);
                 },
                 onCloseCallback: (closeCode) =>
                 {
-                    Debug.Log("WebSocket closed with code: " + closeCode);
+                    LogOutput("WebSocket closed with code: " + closeCode);
                 },
-                model: "gpt-4o-realtime-preview-2024-12-17" // Use your desired realtime model.
+                model: "gpt-4o-realtime-preview-2024-12-17" // Adjust the model if needed.
             );
         }
 
-        /// <summary>
-        /// Records audio from the default microphone for a short duration,
-        /// converts it to PCM16 (Base64 encoded), sends it as an input_audio_buffer.append event,
-        /// and then sends a commit event to prompt the server to process the audio.
-        /// </summary>
-        /// <returns>A task representing the asynchronous operation.</returns>
-        private async Task SendMicAudioMessage()
+        private void Update()
         {
-            string micName = (Microphone.devices.Length > 0) ? Microphone.devices[0] : null;
-            if (micName == null)
+            ws?.DispatchMessageQueue();
+
+            // If recording, update progress.
+            if (isRecording)
             {
-                Debug.LogError("No microphone found!");
+                recordingTime += Time.deltaTime;
+                progressBar.fillAmount = recordingTime / maxRecordDuration;
+            }
+        }
+
+        /// <summary>
+        /// Called when the record button is pressed.
+        /// Starts the recording and schedules the stop after the maximum duration.
+        /// </summary>
+        private void OnRecordButtonPressed()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            LogOutput("Recording not supported on WebGL.");
+#else
+            if (!isRecording)
+            {
+                StartRecording();
+                // Disable the record button until recording is complete.
+                recordButton.interactable = false;
+                // Schedule stop recording after maxRecordDuration seconds.
+                Invoke(nameof(StopRecordingAndSendAudio), maxRecordDuration);
+            }
+#endif
+        }
+
+        /// <summary>
+        /// Starts recording audio from the selected microphone.
+        /// </summary>
+        private void StartRecording()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            LogOutput("Recording not supported on WebGL.");
+#else
+            if (string.IsNullOrEmpty(micName))
+            {
+                LogOutput("No microphone selected.");
+                return;
+            }
+            LogOutput("Starting recording with mic: " + micName);
+            recordingTime = 0f;
+            progressBar.fillAmount = 0f;
+            recordingClip = Microphone.Start(micName, false, maxRecordDuration, sampleRate);
+            isRecording = true;
+#endif
+        }
+
+        /// <summary>
+        /// Stops recording, processes the audio, and sends the audio events (append then commit) to the server.
+        /// </summary>
+        private async void StopRecordingAndSendAudio()
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            LogOutput("Recording not supported on WebGL.");
+            return;
+#else
+            if (!isRecording)
+                return;
+
+            LogOutput("Stopping recording...");
+            int recordedSamples = Microphone.GetPosition(micName);
+            Microphone.End(micName);
+            isRecording = false;
+            LogOutput("Recording stopped. Recorded samples: " + recordedSamples);
+
+            if (recordedSamples <= 0)
+            {
+                LogOutput("No audio recorded.");
+                recordButton.interactable = true;
                 return;
             }
 
-            // Get the microphone frequency capabilities.
-            Microphone.GetDeviceCaps(micName, out int minFreq, out int maxFreq);
-            int sampleRate = (maxFreq == 0) ? 44100 : maxFreq;
-            int recordLength = 1; // Record for 1 second
+            // Retrieve the recorded audio samples.
+            float[] samples = new float[recordedSamples * recordingClip.channels];
+            recordingClip.GetData(samples, 0);
 
-            Debug.Log("Recording audio from mic: " + micName);
-            AudioClip clip = Microphone.Start(micName, false, recordLength, sampleRate);
-            // Wait until recording starts.
-            while (Microphone.GetPosition(micName) <= 0)
-            {
-                await Task.Yield();
-            }
-            // Wait for the duration of the recording.
-            await Task.Delay(recordLength * 1000);
-            Microphone.End(micName);
-            Debug.Log("Recording complete.");
+            // Convert float samples (-1 to 1) to 16-bit PCM bytes.
+            byte[] pcmBytes = ConvertToPCM16(samples);
+            LogOutput("Audio converted to PCM16 with " + pcmBytes.Length + " bytes.");
 
-            // Retrieve the recorded samples.
-            float[] samples = new float[clip.samples * clip.channels];
-            clip.GetData(samples, 0);
+            // Encode PCM data to Base64.
+            string base64Audio = Convert.ToBase64String(pcmBytes);
 
-            // Convert float samples (-1 to 1) to 16-bit PCM data.
-            short[] intData = new short[samples.Length];
-            byte[] bytesData = new byte[samples.Length * 2];
-            for (int i = 0; i < samples.Length; i++)
-            {
-                intData[i] = (short)(Mathf.Clamp(samples[i], -1f, 1f) * short.MaxValue);
-                byte[] byteArr = BitConverter.GetBytes(intData[i]);
-                byteArr.CopyTo(bytesData, i * 2);
-            }
-
-            // Confirm PCM16 conversion.
-            Debug.Log("Audio converted to PCM16 with " + bytesData.Length + " bytes.");
-
-            // Encode the PCM16 byte array to Base64.
-            string base64Audio = Convert.ToBase64String(bytesData);
-
-            // Create the payload for appending the audio buffer.
+            // Create and send the append event.
             var appendPayload = new Dictionary<string, object>
             {
                 { "event_id", "event_" + Guid.NewGuid().ToString("N") },
@@ -177,11 +235,12 @@ namespace OpenAI
             };
 
             string appendJson = JsonConvert.SerializeObject(appendPayload);
-            Debug.Log("Sending mic audio append event: PayLoad Length" + appendJson.Length);
+            LogOutput("Sending mic audio append event. Payload length: " + appendJson.Length);
 
             if (ws == null)
             {
-                Debug.LogError("WebSocket instance is null. Cannot send message.");
+                LogOutput("WebSocket instance is null. Cannot send message.");
+                recordButton.interactable = true;
                 return;
             }
 
@@ -191,18 +250,21 @@ namespace OpenAI
             }
             catch (Exception ex)
             {
-                Debug.LogError("Error sending mic audio append event: " + ex.Message);
+                LogOutput("Error sending mic audio append event: " + ex.Message);
             }
 
-            // Wait a brief moment before sending the commit.
+            // Wait briefly before sending the commit event.
             await Task.Delay(500);
             await SendAudioCommitMessage();
+
+            // Re-enable the record button.
+            recordButton.interactable = true;
+#endif
         }
 
         /// <summary>
-        /// Sends an input_audio_buffer.commit event over the WebSocket to prompt the server to process the audio.
+        /// Sends an input_audio_buffer.commit event to prompt the server to process the appended audio.
         /// </summary>
-        /// <returns>A task representing the asynchronous operation.</returns>
         private async Task SendAudioCommitMessage()
         {
             var commitPayload = new Dictionary<string, object>
@@ -212,7 +274,7 @@ namespace OpenAI
             };
 
             string commitJson = JsonConvert.SerializeObject(commitPayload);
-            Debug.Log("Sending audio buffer commit event: " + commitJson);
+            LogOutput("Sending audio buffer commit event: " + commitJson);
 
             try
             {
@@ -220,18 +282,39 @@ namespace OpenAI
             }
             catch (Exception ex)
             {
-                Debug.LogError("Error sending audio commit event: " + ex.Message);
+                LogOutput("Error sending audio commit event: " + ex.Message);
             }
         }
 
-        private void Update()
+        /// <summary>
+        /// Converts an array of float audio samples (range -1 to 1) into a 16-bit PCM (little-endian) byte array.
+        /// </summary>
+        /// <param name="samples">The float audio samples.</param>
+        /// <returns>A byte array of PCM16 audio data.</returns>
+        private byte[] ConvertToPCM16(float[] samples)
         {
-            // Always dispatch the message queue so that events are processed.
-            if (ws != null)
+            byte[] bytes = new byte[samples.Length * 2];
+            for (int i = 0; i < samples.Length; i++)
             {
-                ws.DispatchMessageQueue();
+                short intSample = (short)(Mathf.Clamp(samples[i], -1f, 1f) * short.MaxValue);
+                byte[] sampleBytes = BitConverter.GetBytes(intSample);
+                bytes[i * 2] = sampleBytes[0];
+                bytes[i * 2 + 1] = sampleBytes[1];
             }
+            return bytes;
         }
 
+        /// <summary>
+        /// Appends a message to the UI text output and logs it.
+        /// </summary>
+        /// <param name="msg">The message to log.</param>
+        private void LogOutput(string msg)
+        {
+            if (message != null)
+            {
+                message.text += msg + "\n";
+            }
+            Debug.Log(msg);
+        }
     }
 }

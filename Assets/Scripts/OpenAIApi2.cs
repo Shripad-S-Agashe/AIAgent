@@ -390,7 +390,7 @@ namespace OpenAI
             Action<WebSocketCloseCode> onCloseCallback = null,
             Action<byte[]> onMessageCallback = null,
             string model = "gpt-4o-realtime-preview-2024-12-17")
-        {
+            {
             // Ensure an ephemeral token is provided.
             if (string.IsNullOrEmpty(ephemeralToken))
             {
