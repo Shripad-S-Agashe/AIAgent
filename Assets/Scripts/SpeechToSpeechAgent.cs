@@ -365,6 +365,17 @@ namespace OpenAI
                 if (json != null && json.TryGetValue("type", out object typeObj))
                 {
                     string type = typeObj.ToString();
+
+                    // --- New check for speech interruption ---
+                    if (type == "input_audio_buffer.speech_started")
+                    {
+                        if (messageHandler != null)
+                        {
+                            messageHandler.UserTalking();
+                        }
+                        return;
+                    }
+
                     if (type == "response.audio.delta")
                     {
                         if (json.TryGetValue("delta", out object deltaObj))
@@ -391,6 +402,7 @@ namespace OpenAI
                 Debug.LogError("Error parsing JSON message: " + ex.Message);
             }
         }
+
 
         /// <summary>
         /// Extracts the transcript from the JSON payload and prints it to the UI.

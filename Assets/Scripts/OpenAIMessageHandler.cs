@@ -26,7 +26,13 @@ public class OpenAIMessageHandler : MonoBehaviour
             short sample = System.BitConverter.ToInt16(newAudioBytes, i * 2);
             audioBuffer.Enqueue(sample / 32768f);
         }
+        // If the AudioSource is stopped (e.g., after an interruption), resume playback.
+        if (!audioSource.isPlaying)
+        {
+            audioSource.Play();
+        }
     }
+
 
     private void OnAudioRead(float[] data)
     {
@@ -38,4 +44,26 @@ public class OpenAIMessageHandler : MonoBehaviour
                 data[i] = 0; // Silence if no data available
         }
     }
+
+    public void UserTalking()
+    {
+        // Stop playback if active
+        if (audioSource.isPlaying)
+        {
+            audioSource.Stop();
+        }
+        else 
+        {
+            return;
+        }
+
+        // Clear any queued audio data
+        audioBuffer.Clear();
+
+        // Reset the playback position if necessary
+        playbackPosition = 0;
+
+        Debug.Log("Audio playback stopped and buffer cleared due to user interruption.");
+    }
+
 }

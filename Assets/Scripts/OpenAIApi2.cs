@@ -444,7 +444,7 @@ namespace OpenAI
                 // Call the passed in callback.
                 onMessageCallback?.Invoke(bytes);
 
-                Debug_DisplayDataAsJasonInLog(bytes);
+               // Debug_DisplayDataAsJasonInLog(bytes);
             };
             Debug.Log($"Attempting WebSocket connection to {wsUrl}...");
             try
