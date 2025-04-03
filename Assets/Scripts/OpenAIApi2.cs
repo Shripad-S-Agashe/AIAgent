@@ -444,7 +444,7 @@ namespace OpenAI
                 // Call the passed in callback.
                 onMessageCallback?.Invoke(bytes);
 
-               // Debug_DisplayDataAsJasonInLog(bytes);
+                Debug_DisplayDataAsJasonInLog(bytes);
             };
             Debug.Log($"Attempting WebSocket connection to {wsUrl}...");
             try
@@ -463,7 +463,6 @@ namespace OpenAI
 
         private static void Debug_DisplayDataAsJasonInLog(byte[] bytes)
         {
-            Debug.Log("Bytes Length:" + bytes.Length);
             string message = Encoding.UTF8.GetString(bytes);
             Debug.Log("Received Raw Message: " + message);
 

@@ -23,7 +23,9 @@ namespace OpenAI
         private WebSocket ws;
 
         [Header("UI Elements")]
-        [SerializeField] private Button recordButton;
+        [SerializeField] private Button StartTalkingButton;
+        [SerializeField] private Button PromptInAction;
+        [SerializeField] private Button PromptOnAction;
         [SerializeField] private Dropdown micDropdown;
         [SerializeField] private Image progressBar;
         [SerializeField] private Text message; // For transcript display only
@@ -33,20 +35,30 @@ namespace OpenAI
 
         // Audio parameters.
         private string micName;
-        private int sampleRate = 16000;
+        private readonly int sampleRate = 16000;
         private AudioClip recordingClip;
         private bool isRecording = false;
         private int lastSamplePosition = 0;
         // Using a long duration to enable continuous recording.
-        private int recordingDuration = 300; // seconds
+        private readonly int recordingDuration = 300; // seconds
 
         // Adjust how frequently (in seconds) new audio is sent.
-        private float sendInterval = 0.25f;
+        private readonly float sendInterval = 0.25f;
 
         [Header("AI Configuration")]
         [SerializeField] private AIVoices AIVoice = AIVoices.coral; // Maximum recording duration in seconds
-        [SerializeField] private string instructions = "You are a very crank onld lady, dont be helpfull but mean you are suppose to question the user";
         [SerializeField] private string model = "gpt-4o-realtime-preview"; // Default model, can be changed if needed
+
+
+        // Add these in your SpeechToSpeech class
+        [SerializeField] private string GenralInstructions = "You are a very crank onld lady, dont be helpfull but mean you are suppose to question the user";
+        [SerializeField] private string CommonPromptInstructions = "Common Stuff for prompts"; 
+        [SerializeField] private string InActionSystemPrompt = "Please provide an in-action reflection to help the player reassess their approach.";
+        [SerializeField] private string OnActionSystemPrompt = "Please provide an on-action reflection to help the player understand what worked and what to improve next time.";
+
+        private string systemPromptInAction = "System Update (In-Action): [Player is struggling with a puzzle]";
+        private string systemPromptOnAction = "System Update (On-Action): [Player has completed a a puzzle]";
+
 
         private async void Start()
         {
@@ -54,11 +66,12 @@ namespace OpenAI
             micDropdown.options.Add(new Dropdown.OptionData("Microphone not supported on WebGL"));
 #else
             // Populate the mic dropdown with available devices.
-            foreach (var device in Microphone.devices)
+            foreach (string device in Microphone.devices)
             {
                 micDropdown.options.Add(new Dropdown.OptionData(device));
             }
             micDropdown.onValueChanged.AddListener(ChangeMicrophone);
+
 
             // Retrieve the last selected mic index (default to 0 if not set).
             int index = PlayerPrefs.GetInt("user-mic-device-index", 0);
@@ -67,7 +80,23 @@ namespace OpenAI
             Debug.Log("Using microphone: " + micName);
 #endif
             // Set up the record button.
-            recordButton.onClick.AddListener(OnRecordButtonPressed);
+            StartTalkingButton.onClick.AddListener(OnRecordButtonPressed);
+            // For In-Action Reflection:
+            PromptInAction.onClick.AddListener(async () =>
+            {
+                await SendSystemMessage(systemPromptInAction);
+                // Use an instruction string for in-action reflection – adjust as needed.
+                await SendResponseCreate(systemPromptInAction + GenralInstructions + CommonPromptInstructions + InActionSystemPrompt);
+            });
+
+            // For On-Action Reflection:
+            PromptOnAction.onClick.AddListener(async () =>
+            {
+                await SendSystemMessage(systemPromptOnAction);
+                // Use an instruction string for on-action reflection – adjust as needed.
+                await SendResponseCreate(OnActionSystemPrompt + GenralInstructions + CommonPromptInstructions + OnActionSystemPrompt);
+            });
+
 
             // Now initialize the realtime session and WebSocket connection.
             openAIApi = new OpenAIApi2();
@@ -92,15 +121,15 @@ namespace OpenAI
         {
             Debug.Log("Creating OpenAI Realtime Session...");
 
-            var request = new OpenAIApi2.RealtimeSessionRequest
+            RealtimeSessionRequest request = new()
             {
                 model = model,
-                instructions = instructions,
+                instructions = GenralInstructions,
                 modalities = new string[] { "audio", "text" },
-                voice = AIVoice.ToString().ToLowerInvariant(), 
+                voice = AIVoice.ToString().ToLowerInvariant(),
             };
 
-            var response = await openAIApi.CreateRealtimeSession(request);
+            RealtimeSessionResponse response = await openAIApi.CreateRealtimeSession(request);
             if (response?.client_secret != null)
             {
                 SessionSecret = response.client_secret.value;
@@ -159,12 +188,12 @@ namespace OpenAI
             if (!isRecording)
             {
                 StartRecording();
-                recordButton.GetComponentInChildren<Text>().text = "Stop Recording";
+                StartTalkingButton.GetComponentInChildren<Text>().text = "Stop Recording";
             }
             else
             {
                 StopRecording();
-                recordButton.GetComponentInChildren<Text>().text = "Record";
+                StartTalkingButton.GetComponentInChildren<Text>().text = "Record";
             }
 #endif
         }
@@ -199,7 +228,9 @@ namespace OpenAI
         private void StopRecording()
         {
             if (!isRecording)
+            {
                 return;
+            }
 
             Debug.Log("Stopping recording...");
             Microphone.End(micName);
@@ -214,16 +245,15 @@ namespace OpenAI
             while (isRecording)
             {
                 int currentPosition = Microphone.GetPosition(micName);
-                int sampleCount = 0;
-                float[] samples = null;
-
+                int sampleCount;
+                float[] samples;
                 // Handle the case when the recording wraps around.
                 if (currentPosition < lastSamplePosition)
                 {
                     // Calculate samples from lastSamplePosition to end of clip.
                     sampleCount = recordingClip.samples - lastSamplePosition;
                     samples = new float[sampleCount];
-                    recordingClip.GetData(samples, lastSamplePosition);
+                    _ = recordingClip.GetData(samples, lastSamplePosition);
 
                     // Process and send the first half.
                     if (sampleCount > 0)
@@ -236,7 +266,7 @@ namespace OpenAI
                     {
                         sampleCount = currentPosition;
                         samples = new float[sampleCount];
-                        recordingClip.GetData(samples, 0);
+                        _ = recordingClip.GetData(samples, 0);
                         SendAudioChunk(samples);
                     }
                 }
@@ -246,7 +276,7 @@ namespace OpenAI
                     if (sampleCount > 0)
                     {
                         samples = new float[sampleCount];
-                        recordingClip.GetData(samples, lastSamplePosition);
+                        _ = recordingClip.GetData(samples, lastSamplePosition);
                         SendAudioChunk(samples);
                     }
                 }
@@ -263,7 +293,9 @@ namespace OpenAI
         private async void SendAudioChunk(float[] samples)
         {
             if (samples == null || samples.Length == 0 || ws == null)
+            {
                 return;
+            }
 
             byte[] pcmBytes = ConvertToPCM16(samples);
 
@@ -271,7 +303,7 @@ namespace OpenAI
             string base64Audio = Convert.ToBase64String(pcmBytes);
 
             // Create and send the append event.
-            var appendPayload = new Dictionary<string, object>
+            Dictionary<string, object> appendPayload = new()
             {
                 { "event_id", "event_" + Guid.NewGuid().ToString("N") },
                 { "type", "input_audio_buffer.append" },
@@ -301,7 +333,7 @@ namespace OpenAI
                 short intSample = (short)(Mathf.Clamp(samples[i], -1f, 1f) * short.MaxValue);
                 byte[] sampleBytes = BitConverter.GetBytes(intSample);
                 bytes[i * 2] = sampleBytes[0];
-                bytes[i * 2 + 1] = sampleBytes[1];
+                bytes[(i * 2) + 1] = sampleBytes[1];
             }
             return bytes;
         }
@@ -329,7 +361,7 @@ namespace OpenAI
             string msg = Encoding.UTF8.GetString(bytes);
             try
             {
-                var json = JsonConvert.DeserializeObject<Dictionary<string, object>>(msg);
+                Dictionary<string, object> json = JsonConvert.DeserializeObject<Dictionary<string, object>>(msg);
                 if (json != null && json.TryGetValue("type", out object typeObj))
                 {
                     string type = typeObj.ToString();
@@ -367,8 +399,7 @@ namespace OpenAI
         {
             if (json.TryGetValue("part", out object partObj))
             {
-                var partJObject = partObj as Newtonsoft.Json.Linq.JObject;
-                if (partJObject != null && partJObject.TryGetValue("transcript", out var transcriptToken))
+                if (partObj is Newtonsoft.Json.Linq.JObject partJObject && partJObject.TryGetValue("transcript", out Newtonsoft.Json.Linq.JToken transcriptToken))
                 {
                     string transcript = transcriptToken.ToString();
                     LogOutput("Transcript: " + transcript);
@@ -377,5 +408,69 @@ namespace OpenAI
             }
             LogOutput("Transcript not found in the response.");
         }
+
+
+        private async Task SendSystemMessage(string text)
+        {
+            Dictionary<string, object> systemPayload = new()
+            {
+                { "event_id", "event_" + Guid.NewGuid().ToString("N") },
+                { "type", "conversation.item.create" },
+                { "previous_item_id", null }, // Optional: You can track message chaining if needed
+                { "item", new Dictionary<string, object>
+                    {
+                        { "type", "message" },
+                        { "role", "system" }, // Or "system" if it's a neutral prompt
+                        { "content", new List<Dictionary<string, object>>
+                            {
+                                new() {
+                                    { "type", "input_text" },
+                                    { "text", text }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            string systemJson = JsonConvert.SerializeObject(systemPayload);
+            try
+            {
+                await ws.SendText(systemJson);
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("Error sending system message: " + ex.Message);
+            }
+        }
+
+
+        // This method sends a "response.create" event to prompt the agent to produce a voice response.
+       // The instructions parameter can be customized for In-Action or On-Action reflection.
+        private async Task SendResponseCreate(string instructions)
+        {
+            var responsePayload = new Dictionary<string, object>
+        {
+        { "event_id", "event_" + Guid.NewGuid().ToString("N") },
+        { "type", "response.create" },
+        { "response", new Dictionary<string, object>
+            {
+                { "modalities", new string[] { "text", "audio" } },
+                { "instructions", instructions },
+                { "output_audio_format", "pcm16" },
+            }
+        }
+        };
+        string responseJson = JsonConvert.SerializeObject(responsePayload);
+            try
+            {
+                await ws.SendText(responseJson);
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("Error sending response.create event: " + ex.Message);
+            }
+        }
+
     }
 }
